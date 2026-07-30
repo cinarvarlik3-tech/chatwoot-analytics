@@ -9,9 +9,16 @@ import type { MetricMode } from "@/lib/types";
 interface MetricToggleProps {
   value: MetricMode;
   onChange: (value: MetricMode) => void;
+  messagesLabel?: string;
+  leadsLabel?: string;
 }
 
-export function MetricToggle({ value, onChange }: MetricToggleProps) {
+export function MetricToggle({
+  value,
+  onChange,
+  messagesLabel = "Mesaj",
+  leadsLabel = "Lead",
+}: MetricToggleProps) {
   return (
     <div
       className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 text-xs font-medium"
@@ -27,7 +34,7 @@ export function MetricToggle({ value, onChange }: MetricToggleProps) {
             : "text-slate-600 hover:text-slate-900"
         }`}
       >
-        Mesaj
+        {messagesLabel}
       </button>
       <button
         type="button"
@@ -38,7 +45,7 @@ export function MetricToggle({ value, onChange }: MetricToggleProps) {
             : "text-slate-600 hover:text-slate-900"
         }`}
       >
-        Lead
+        {leadsLabel}
       </button>
     </div>
   );

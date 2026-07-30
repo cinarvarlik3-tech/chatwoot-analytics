@@ -12,6 +12,7 @@ import type { FilterOption, SchoolTableRow } from "@/lib/types";
 interface SchoolBreakdownTableProps {
   data: SchoolTableRow[];
   loading?: boolean;
+  entityLabel?: string;
 }
 
 type SortDirection = "desc" | "asc";
@@ -29,6 +30,7 @@ function toFilterOptions(rows: SchoolTableRow[]): FilterOption[] {
 export function SchoolBreakdownTable({
   data,
   loading,
+  entityLabel = "Okul",
 }: SchoolBreakdownTableProps) {
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
@@ -60,20 +62,22 @@ export function SchoolBreakdownTable({
     <section className="flex flex-col rounded-2xl border border-slate-200 bg-white shadow-sm">
       <header className="relative z-50 shrink-0 space-y-4 border-b border-slate-100 px-5 py-4">
         <div>
-          <h3 className="text-base font-semibold text-slate-900">Okul Özeti</h3>
+          <h3 className="text-base font-semibold text-slate-900">
+            {entityLabel} Özeti
+          </h3>
           <p className="text-sm text-slate-500">
-            En az bir mesaj veya lead kaydı olan okullar
+            En az bir mesaj veya lead kaydı olan {entityLabel.toLocaleLowerCase("tr")}ler
           </p>
         </div>
 
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div className="min-w-0 flex-1">
             <SearchableSelect
-              label="Okul Ara"
+              label={`${entityLabel} Ara`}
               options={selectOptions}
               value={selectedKeys}
               onChange={setSelectedKeys}
-              placeholder="Okul ara ve seç…"
+              placeholder={`${entityLabel} ara ve seç…`}
               disabled={loading || baseRows.length === 0}
             />
           </div>
@@ -119,7 +123,7 @@ export function SchoolBreakdownTable({
                 scope="col"
                 className={`${cellClass} font-semibold text-slate-700`}
               >
-                Okul İsmi
+                {entityLabel} İsmi
               </th>
               <th
                 scope="col"

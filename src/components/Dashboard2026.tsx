@@ -1,20 +1,23 @@
 "use client";
 
 /**
- * Chatwoot archive dashboard (2025 static database).
+ * Live CRM analytics dashboard (2026).
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { BarChart3, Filter } from "lucide-react";
 import { BreakdownPieChart } from "@/components/BreakdownPieChart";
-import { FilterModal } from "@/components/FilterModal";
+import { CrmFilterModal } from "@/components/CrmFilterModal";
+import { SalespersonPerformanceTable } from "@/components/SalespersonPerformanceTable";
+import { SalespersonTimeSeriesChart } from "@/components/SalespersonTimeSeriesChart";
 import { SchoolBreakdownTable } from "@/components/SchoolBreakdownTable";
 import { StatCards } from "@/components/StatCards";
 import { TimeSeriesChart } from "@/components/TimeSeriesChart";
 import type {
-  AnalyticsResponse,
-  DashboardFilters,
-  FilterOptionsResponse,
+  CrmAnalyticsResponse,
+  CrmDashboardFilters,
+  CrmFilterOptionsResponse,
+  CrmSalesAnalyticsResponse,
   Granularity,
   MetricMode,
 } from "@/lib/types";
@@ -24,57 +27,51 @@ import {
   dashboardMainClass,
 } from "@/lib/dashboardLayout";
 
-const defaultFilters: DashboardFilters = {
+const defaultFilters: CrmDashboardFilters = {
   startDate: null,
   endDate: null,
-  universities: [],
-  channelIds: [],
+  parentUniversities: [],
 };
 
 function buildQuery(
-  filters: DashboardFilters,
+  filters: CrmDashboardFilters,
   granularity: Granularity,
+  salespersonIds: string[] = [],
 ): string {
   const params = new URLSearchParams();
   params.set("granularity", granularity);
   if (filters.startDate) params.set("startDate", filters.startDate);
   if (filters.endDate) params.set("endDate", filters.endDate);
-  filters.universities.forEach((name) => params.append("university", name));
-  filters.channelIds.forEach((id) => params.append("channelId", String(id)));
+  filters.parentUniversities.forEach((name) =>
+    params.append("parentUniversity", name),
+  );
+  salespersonIds.forEach((id) => params.append("salespersonId", id));
   return params.toString();
 }
 
-function activeFilterCount(filters: DashboardFilters): number {
+function activeFilterCount(filters: CrmDashboardFilters): number {
   let count = 0;
   if (filters.startDate) count += 1;
   if (filters.endDate) count += 1;
-  if (filters.universities.length > 0) count += 1;
-  if (filters.channelIds.length > 0) count += 1;
+  if (filters.parentUniversities.length > 0) count += 1;
   return count;
 }
 
-function resolveUniversityNames(
+function resolveParentNames(
   ids: string[],
-  options: FilterOptionsResponse | null,
+  options: CrmFilterOptionsResponse | null,
 ): string[] {
   if (!options) return ids;
-  const lookup = new Map(options.universities.map((item) => [item.id, item.name]));
+  const lookup = new Map(
+    options.parentUniversities.map((item) => [item.id, item.name]),
+  );
   return ids.map((id) => lookup.get(id) ?? id);
 }
 
-function resolveChannelNames(
-  ids: number[],
-  options: FilterOptionsResponse | null,
-): string[] {
-  if (!options) return ids.map(String);
-  const lookup = new Map(options.channels.map((item) => [item.id, item.name]));
-  return ids.map((id) => lookup.get(id) ?? String(id));
-}
-
 interface ActiveFilterChipsProps {
-  filters: DashboardFilters;
-  options: FilterOptionsResponse | null;
-  onChange: (filters: DashboardFilters) => void;
+  filters: CrmDashboardFilters;
+  options: CrmFilterOptionsResponse | null;
+  onChange: (filters: CrmDashboardFilters) => void;
 }
 
 function ActiveFilterChips({
@@ -83,8 +80,7 @@ function ActiveFilterChips({
   onChange,
 }: ActiveFilterChipsProps) {
   const hasFilters =
-    filters.universities.length > 0 ||
-    filters.channelIds.length > 0 ||
+    filters.parentUniversities.length > 0 ||
     filters.startDate ||
     filters.endDate;
 
@@ -107,31 +103,22 @@ function ActiveFilterChips({
     });
   }
 
-  resolveUniversityNames(filters.universities, options).forEach((name, index) => {
-    const id = filters.universities[index];
-    chips.push({
-      key: `uni-${id}`,
-      label: name,
-      onRemove: () =>
-        onChange({
-          ...filters,
-          universities: filters.universities.filter((item) => item !== id),
-        }),
-    });
-  });
-
-  resolveChannelNames(filters.channelIds, options).forEach((name, index) => {
-    const id = filters.channelIds[index];
-    chips.push({
-      key: `ch-${id}`,
-      label: name,
-      onRemove: () =>
-        onChange({
-          ...filters,
-          channelIds: filters.channelIds.filter((item) => item !== id),
-        }),
-    });
-  });
+  resolveParentNames(filters.parentUniversities, options).forEach(
+    (name, index) => {
+      const id = filters.parentUniversities[index];
+      chips.push({
+        key: `parent-${id}`,
+        label: name,
+        onRemove: () =>
+          onChange({
+            ...filters,
+            parentUniversities: filters.parentUniversities.filter(
+              (item) => item !== id,
+            ),
+          }),
+      });
+    },
+  );
 
   return (
     <div className={`border-b border-slate-200 bg-white ${dashboardFilterChipsClass}`}>
@@ -165,19 +152,31 @@ function ActiveFilterChips({
   );
 }
 
-export function Dashboard2025() {
-  const [filters, setFilters] = useState<DashboardFilters>(defaultFilters);
+export function Dashboard2026() {
+  const [filters, setFilters] = useState<CrmDashboardFilters>(defaultFilters);
   const [filterOptions, setFilterOptions] =
-    useState<FilterOptionsResponse | null>(null);
-  const [analytics, setAnalytics] = useState<AnalyticsResponse | null>(null);
+    useState<CrmFilterOptionsResponse | null>(null);
+  const [analytics, setAnalytics] = useState<CrmAnalyticsResponse | null>(null);
+  const [salesAnalytics, setSalesAnalytics] =
+    useState<CrmSalesAnalyticsResponse | null>(null);
+  const [selectedSalespeople, setSelectedSalespeople] = useState<string[]>([]);
+  const [salesMetric, setSalesMetric] = useState<MetricMode>("messages");
   const [granularity, setGranularity] = useState<Granularity>("monthly");
+  const [salesGranularity, setSalesGranularity] =
+    useState<Granularity>("weekly");
   const [metric, setMetric] = useState<MetricMode>("messages");
   const [filterOpen, setFilterOpen] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [salesLoading, setSalesLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const displaySelectedSalespeople = useMemo(() => {
+    if (selectedSalespeople.length > 0) return selectedSalespeople;
+    return salesAnalytics?.salespeople.map((item) => item.id) ?? [];
+  }, [selectedSalespeople, salesAnalytics]);
+
   useEffect(() => {
-    fetch("/api/filters")
+    fetch("/api/crm/filters")
       .then((res) => {
         if (!res.ok) throw new Error("Filtreler alınamadı");
         return res.json();
@@ -191,10 +190,10 @@ export function Dashboard2025() {
     setError(null);
     try {
       const res = await fetch(
-        `/api/analytics?${buildQuery(filters, granularity)}`,
+        `/api/crm/analytics?${buildQuery(filters, granularity)}`,
       );
       if (!res.ok) throw new Error("Analitik veriler alınamadı");
-      const data: AnalyticsResponse = await res.json();
+      const data: CrmAnalyticsResponse = await res.json();
       setAnalytics(data);
     } catch {
       setError("Veriler yüklenirken bir hata oluştu");
@@ -203,9 +202,33 @@ export function Dashboard2025() {
     }
   }, [filters, granularity]);
 
+  const loadSalesAnalytics = useCallback(async () => {
+    setSalesLoading(true);
+    try {
+      const res = await fetch(
+        `/api/crm/sales-analytics?${buildQuery(
+          filters,
+          salesGranularity,
+          selectedSalespeople,
+        )}`,
+      );
+      if (!res.ok) throw new Error("Satışçı verileri alınamadı");
+      const data: CrmSalesAnalyticsResponse = await res.json();
+      setSalesAnalytics(data);
+    } catch {
+      setError("Satışçı verileri yüklenirken bir hata oluştu");
+    } finally {
+      setSalesLoading(false);
+    }
+  }, [filters, salesGranularity, selectedSalespeople]);
+
   useEffect(() => {
     loadAnalytics();
   }, [loadAnalytics]);
+
+  useEffect(() => {
+    loadSalesAnalytics();
+  }, [loadSalesAnalytics]);
 
   const filterBadge = useMemo(() => activeFilterCount(filters), [filters]);
 
@@ -214,15 +237,15 @@ export function Dashboard2025() {
       <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/90 backdrop-blur">
         <div className={dashboardHeaderClass}>
           <div className="flex items-center gap-3">
-            <div className="rounded-xl bg-violet-600 p-2.5 text-white">
+            <div className="rounded-xl bg-emerald-600 p-2.5 text-white">
               <BarChart3 className="h-5 w-5" aria-hidden />
             </div>
             <div>
               <h1 className="text-lg font-semibold text-slate-900">
-                Chatwoot Analitiği
+                CRM Analitiği
               </h1>
               <p className="text-sm text-slate-500">
-                Chatwoot arşivi — 2025 verileri
+                Canlı lead ve mesaj verileri — 2026
               </p>
             </div>
           </div>
@@ -260,11 +283,11 @@ export function Dashboard2025() {
         )}
 
         <StatCards
-          primaryLabel="Toplam Mesaj"
-          primaryValue={analytics?.totals.messages ?? 0}
-          secondaryLabel="Toplam Lead"
-          secondarySubtitle="Benzersiz konuşma"
-          secondaryValue={analytics?.totals.leads ?? 0}
+          primaryLabel="Gelen Mesaj"
+          primaryValue={analytics?.totals.incomingMessages ?? 0}
+          secondaryLabel="Benzersiz Telefon"
+          secondarySubtitle="Lead sayısı"
+          secondaryValue={analytics?.totals.uniquePhones ?? 0}
           loading={loading && !analytics}
         />
 
@@ -277,38 +300,51 @@ export function Dashboard2025() {
           granularity={granularity}
           onGranularityChange={setGranularity}
           loading={loading}
+          messageMetricLabel="Gelen Mesaj"
+          leadMetricLabel="Telefon"
         />
 
-        <div className="grid gap-6 xl:grid-cols-2">
-          <BreakdownPieChart
-            title="Okula Göre"
-            messagesData={analytics?.messages.bySchool ?? []}
-            leadsData={analytics?.leads.bySchool ?? []}
-            metric={metric}
-            onMetricChange={setMetric}
-            breakdownLabel="school"
-            loading={loading}
-            maxSlices={10}
-          />
-          <BreakdownPieChart
-            title="Kanala Göre"
-            messagesData={analytics?.messages.byChannel ?? []}
-            leadsData={analytics?.leads.byChannel ?? []}
-            metric={metric}
-            onMetricChange={setMetric}
-            breakdownLabel="channel"
-            loading={loading}
-            maxSlices={6}
-          />
-        </div>
+        <BreakdownPieChart
+          title="Okula Göre"
+          messagesData={analytics?.messages.bySchool ?? []}
+          leadsData={analytics?.leads.bySchool ?? []}
+          metric={metric}
+          onMetricChange={setMetric}
+          breakdownLabel="school"
+          loading={loading}
+          maxSlices={10}
+        />
 
         <SchoolBreakdownTable
           data={analytics?.bySchoolTable ?? []}
           loading={loading}
+          entityLabel="Üniversite"
+        />
+
+        <SalespersonPerformanceTable
+          data={salesAnalytics?.table ?? []}
+          loading={salesLoading && !salesAnalytics}
+          metric={salesMetric}
+          onMetricChange={setSalesMetric}
+        />
+
+        <SalespersonTimeSeriesChart
+          title="Zaman İçinde Satışçı Performansı"
+          messagesData={salesAnalytics?.messagesTimeSeries ?? []}
+          conversationsData={salesAnalytics?.conversationsTimeSeries ?? []}
+          seriesMeta={salesAnalytics?.seriesMeta ?? []}
+          salespeopleOptions={salesAnalytics?.salespeople ?? []}
+          selectedSalespeople={displaySelectedSalespeople}
+          onSelectedSalespeopleChange={setSelectedSalespeople}
+          metric={salesMetric}
+          onMetricChange={setSalesMetric}
+          granularity={salesGranularity}
+          onGranularityChange={setSalesGranularity}
+          loading={salesLoading}
         />
       </main>
 
-      <FilterModal
+      <CrmFilterModal
         open={filterOpen}
         onClose={() => setFilterOpen(false)}
         options={filterOptions}

@@ -25,6 +25,8 @@ interface TimeSeriesChartProps {
   granularity: Granularity;
   onGranularityChange: (granularity: Granularity) => void;
   loading?: boolean;
+  messageMetricLabel?: string;
+  leadMetricLabel?: string;
 }
 
 const GRANULARITY_OPTIONS: { value: Granularity; label: string }[] = [
@@ -33,22 +35,6 @@ const GRANULARITY_OPTIONS: { value: Granularity; label: string }[] = [
   { value: "weekly", label: "Haftalık" },
   { value: "daily", label: "Günlük" },
 ];
-
-const METRIC_CONFIG: Record<
-  MetricMode,
-  { label: string; color: string; subtitle: string }
-> = {
-  messages: {
-    label: "Mesaj",
-    color: "#7c3aed",
-    subtitle: "Seçilen döneme göre mesaj sayısı",
-  },
-  leads: {
-    label: "Lead",
-    color: "#059669",
-    subtitle: "Seçilen döneme göre lead sayısı (benzersiz konuşma)",
-  },
-};
 
 export function TimeSeriesChart({
   title,
@@ -59,8 +45,26 @@ export function TimeSeriesChart({
   granularity,
   onGranularityChange,
   loading,
+  messageMetricLabel = "Mesaj",
+  leadMetricLabel = "Lead",
 }: TimeSeriesChartProps) {
-  const config = METRIC_CONFIG[metric];
+  const metricConfig: Record<
+    MetricMode,
+    { label: string; color: string; subtitle: string }
+  > = {
+    messages: {
+      label: messageMetricLabel,
+      color: "#7c3aed",
+      subtitle: `Seçilen döneme göre ${messageMetricLabel.toLocaleLowerCase("tr")} sayısı`,
+    },
+    leads: {
+      label: leadMetricLabel,
+      color: "#059669",
+      subtitle: `Seçilen döneme göre ${leadMetricLabel.toLocaleLowerCase("tr")} sayısı`,
+    },
+  };
+
+  const config = metricConfig[metric];
   const data = metric === "messages" ? messagesData : leadsData;
 
   return (
