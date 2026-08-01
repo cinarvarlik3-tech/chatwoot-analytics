@@ -108,7 +108,7 @@ export function SalespersonTimeSeriesChart({
         <div>
           <h3 className="text-base font-semibold text-slate-900">{title}</h3>
           <p className="text-sm text-slate-500">
-            Seçilen satışçıların giden {metricLabel.toLowerCase()} sayısı
+            Seçilen agentların giden {metricLabel.toLowerCase()} sayısı
           </p>
         </div>
 
@@ -144,7 +144,7 @@ export function SalespersonTimeSeriesChart({
 
       <div className="relative z-50 mb-5 max-w-xl">
         <SearchableSelect
-          label="Satışçı Seç"
+          label="Agent Seç"
           options={salespeopleOptions}
           value={selectedSalespeople}
           onChange={(next) =>
@@ -154,10 +154,10 @@ export function SalespersonTimeSeriesChart({
               onSelectedSalespeopleChange,
             )
           }
-          placeholder="Satışçı ara ve seç…"
+          placeholder="Agent ara ve seç…"
         />
         <p className="mt-1 text-xs text-slate-500">
-          En az bir satışçı seçilmelidir.
+          En az bir agent seçilmelidir (Bot dahil).
         </p>
       </div>
 

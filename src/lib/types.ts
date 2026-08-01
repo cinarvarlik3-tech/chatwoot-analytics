@@ -93,6 +93,7 @@ export interface CrmAnalyticsResponse {
   totals: {
     incomingMessages: number;
     uniquePhones: number;
+    automationMessages: number;
   };
   messages: CrmMetricBundle;
   leads: CrmMetricBundle;

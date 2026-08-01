@@ -11,6 +11,10 @@ import {
   UNPARSED_PARENT,
 } from "./campusNormalization";
 import { getCrmPool } from "./crmDb";
+import {
+  AUTOMATION_OUTBOUND_MESSAGE_FILTER,
+  HUMAN_INCOMING_MESSAGE_FILTER,
+} from "./crmMessageFilters";
 import type {
   BreakdownPoint,
   CrmAnalyticsResponse,
@@ -26,10 +30,7 @@ interface WhereClause {
   params: unknown[];
 }
 
-const INCOMING_MESSAGE_FILTER = `
-  lm.is_private = false
-  AND (lm.direction = 'incoming' OR lm.message_type = 'incoming')
-`;
+const INCOMING_MESSAGE_FILTER = HUMAN_INCOMING_MESSAGE_FILTER;
 
 /**
  * Loads distinct campus values for parent filter expansion.
@@ -97,8 +98,9 @@ function appendSchoolFilter(
 
 async function buildMessageWhere(
   filters: CrmDashboardFilters,
+  messageFilter: string = INCOMING_MESSAGE_FILTER,
 ): Promise<WhereClause> {
-  const parts = [`l.is_deleted = false`, INCOMING_MESSAGE_FILTER];
+  const parts = [`l.is_deleted = false`, messageFilter];
   const params: unknown[] = [];
 
   if (filters.startDate) {
@@ -310,6 +312,10 @@ export async function getCrmAnalytics(
 ): Promise<CrmAnalyticsResponse> {
   const pool = getCrmPool();
   const messageWhere = await buildMessageWhere(filters);
+  const automationWhere = await buildMessageWhere(
+    filters,
+    AUTOMATION_OUTBOUND_MESSAGE_FILTER,
+  );
   const leadWhere = await buildLeadWhere(filters);
   const unit = granularityUnit(granularity);
 
@@ -326,8 +332,16 @@ export async function getCrmAnalytics(
     ${leadWhere.sql}
   `;
 
+  const automationFrom = `
+    FROM lead_messages lm
+    INNER JOIN leads l ON l.uuid = lm.lead_uuid
+    LEFT JOIN lead_details ld ON ld.lead_uuid = l.uuid
+    ${automationWhere.sql}
+  `;
+
   const [
     messageTotals,
+    automationTotals,
     leadTotals,
     messageTimeSeries,
     leadTimeSeries,
@@ -339,6 +353,10 @@ export async function getCrmAnalytics(
     pool.query(
       `SELECT COUNT(*)::int AS count ${messageFrom}`,
       messageWhere.params,
+    ),
+    pool.query(
+      `SELECT COUNT(*)::int AS count ${automationFrom}`,
+      automationWhere.params,
     ),
     pool.query(
       `SELECT COUNT(DISTINCT l.lead_phone)::int AS count ${leadFrom}`,
@@ -398,6 +416,7 @@ export async function getCrmAnalytics(
     totals: {
       incomingMessages: messageTotals.rows[0]?.count ?? 0,
       uniquePhones: leadTotals.rows[0]?.count ?? 0,
+      automationMessages: automationTotals.rows[0]?.count ?? 0,
     },
     messages: {
       timeSeries: mapTimeSeries(messageTimeSeries.rows, granularity),

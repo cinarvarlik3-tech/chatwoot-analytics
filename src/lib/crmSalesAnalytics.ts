@@ -7,10 +7,13 @@ import { format } from "date-fns";
 import { tr } from "date-fns/locale";
 import {
   campusMatchesParent,
-  getParentUniversity,
   UNPARSED_PARENT,
 } from "./campusNormalization";
 import { getCrmPool } from "./crmDb";
+import {
+  AUTOMATION_OUTBOUND_MESSAGE_FILTER,
+  HUMAN_OUTBOUND_MESSAGE_FILTER,
+} from "./crmMessageFilters";
 import type {
   CrmDashboardFilters,
   CrmSalesAnalyticsResponse,
@@ -26,12 +29,11 @@ interface WhereClause {
   params: unknown[];
 }
 
-const OUTBOUND_MESSAGE_FILTER = `
-  lm.is_private = false
-  AND lm.direction = 'outgoing'
-  AND lm.message_type = 'outgoing'
-  AND lm.sender_type = 'user'
-`;
+const HUMAN_OUTBOUND_MESSAGE_FILTER_LOCAL = HUMAN_OUTBOUND_MESSAGE_FILTER;
+
+/** Synthetic agent id for automation/bot outbound messages in charts. */
+export const BOT_AGENT_ID = "__bot__";
+export const BOT_AGENT_NAME = "Bot";
 
 const SALESPERSON_JOIN = `
   INNER JOIN salespeople sp
@@ -92,9 +94,10 @@ function appendSchoolFilter(
 
 async function buildOutboundWhere(
   filters: CrmDashboardFilters,
+  messageFilter: string,
   options?: { includeDateRange?: boolean },
 ): Promise<WhereClause> {
-  const parts = ["l.is_deleted = false", OUTBOUND_MESSAGE_FILTER];
+  const parts = ["l.is_deleted = false", messageFilter];
   const params: unknown[] = [];
   const includeDateRange = options?.includeDateRange ?? true;
 
@@ -192,6 +195,29 @@ function pivotTimeSeries(
   };
 }
 
+function mapBotTableRow(row: Record<string, unknown>): SalespersonPerformanceRow {
+  return {
+    id: BOT_AGENT_ID,
+    name: BOT_AGENT_NAME,
+    totalMessages: row.total_messages as number,
+    totalConversations: row.total_conversations as number,
+    last30DaysMessages: row.last30_messages as number,
+    last30DaysConversations: row.last30_conversations as number,
+    todayMessages: row.today_messages as number,
+    todayConversations: row.today_conversations as number,
+  };
+}
+
+function sortPerformanceRows(
+  rows: SalespersonPerformanceRow[],
+): SalespersonPerformanceRow[] {
+  return [...rows].sort((a, b) => {
+    const byMessages = b.totalMessages - a.totalMessages;
+    if (byMessages !== 0) return byMessages;
+    return a.name.localeCompare(b.name, "tr");
+  });
+}
+
 /**
  * Loads salesperson performance table and multi-series time chart data.
  */
@@ -201,28 +227,61 @@ export async function getCrmSalesAnalytics(
   salespersonIds: string[],
 ): Promise<CrmSalesAnalyticsResponse> {
   const pool = getCrmPool();
-  const chartWhere = await buildOutboundWhere(filters, { includeDateRange: true });
-  const tableWhere = await buildOutboundWhere(filters, { includeDateRange: false });
+  const humanChartWhere = await buildOutboundWhere(
+    filters,
+    HUMAN_OUTBOUND_MESSAGE_FILTER_LOCAL,
+    { includeDateRange: true },
+  );
+  const humanTableWhere = await buildOutboundWhere(
+    filters,
+    HUMAN_OUTBOUND_MESSAGE_FILTER_LOCAL,
+    { includeDateRange: false },
+  );
+  const botChartWhere = await buildOutboundWhere(
+    filters,
+    AUTOMATION_OUTBOUND_MESSAGE_FILTER,
+    { includeDateRange: true },
+  );
+  const botTableWhere = await buildOutboundWhere(
+    filters,
+    AUTOMATION_OUTBOUND_MESSAGE_FILTER,
+    { includeDateRange: false },
+  );
 
-  const outboundFrom = `
+  const humanOutboundFrom = `
     FROM lead_messages lm
     INNER JOIN leads l ON l.uuid = lm.lead_uuid
     LEFT JOIN lead_details ld ON ld.lead_uuid = l.uuid
     ${SALESPERSON_JOIN}
-    ${tableWhere.sql}
+    ${humanTableWhere.sql}
   `;
 
-  const chartFrom = `
+  const humanChartFrom = `
     FROM lead_messages lm
     INNER JOIN leads l ON l.uuid = lm.lead_uuid
     LEFT JOIN lead_details ld ON ld.lead_uuid = l.uuid
     ${SALESPERSON_JOIN}
-    ${chartWhere.sql}
+    ${humanChartWhere.sql}
+  `;
+
+  const botOutboundFrom = `
+    FROM lead_messages lm
+    INNER JOIN leads l ON l.uuid = lm.lead_uuid
+    LEFT JOIN lead_details ld ON ld.lead_uuid = l.uuid
+    ${botTableWhere.sql}
+  `;
+
+  const botChartFrom = `
+    FROM lead_messages lm
+    INNER JOIN leads l ON l.uuid = lm.lead_uuid
+    LEFT JOIN lead_details ld ON ld.lead_uuid = l.uuid
+    ${botChartWhere.sql}
   `;
 
   const unit = granularityUnit(granularity);
 
-  const [tableRows, seriesRows] = await Promise.all([
+  const [humanTableRows, botTableRows, humanSeriesRows, botSeriesRows] =
+    await Promise.all([
     pool.query(
       `SELECT
          sp.id,
@@ -243,10 +302,30 @@ export async function getCrmSalesAnalytics(
            WHERE (lm.created_at AT TIME ZONE 'Europe/Istanbul')::date =
                  (CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Istanbul')::date
          )::int AS today_conversations
-       ${outboundFrom}
-       GROUP BY sp.id, sp.full_name
-       ORDER BY total_messages DESC, sp.full_name ASC`,
-      tableWhere.params,
+       ${humanOutboundFrom}
+       GROUP BY sp.id, sp.full_name`,
+      humanTableWhere.params,
+    ),
+    pool.query(
+      `SELECT
+         COUNT(*)::int AS total_messages,
+         COUNT(DISTINCT lm.lead_uuid)::int AS total_conversations,
+         COUNT(*) FILTER (
+           WHERE lm.created_at >= NOW() - interval '30 days'
+         )::int AS last30_messages,
+         COUNT(DISTINCT lm.lead_uuid) FILTER (
+           WHERE lm.created_at >= NOW() - interval '30 days'
+         )::int AS last30_conversations,
+         COUNT(*) FILTER (
+           WHERE (lm.created_at AT TIME ZONE 'Europe/Istanbul')::date =
+                 (CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Istanbul')::date
+         )::int AS today_messages,
+         COUNT(DISTINCT lm.lead_uuid) FILTER (
+           WHERE (lm.created_at AT TIME ZONE 'Europe/Istanbul')::date =
+                 (CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Istanbul')::date
+         )::int AS today_conversations
+       ${botOutboundFrom}`,
+      botTableWhere.params,
     ),
     pool.query(
       `SELECT
@@ -255,23 +334,44 @@ export async function getCrmSalesAnalytics(
          sp.full_name,
          COUNT(*)::int AS messages,
          COUNT(DISTINCT lm.lead_uuid)::int AS conversations
-       ${chartFrom}
+       ${humanChartFrom}
        GROUP BY 1, 2, 3
        ORDER BY 1 ASC, 3 ASC`,
-      chartWhere.params,
+      humanChartWhere.params,
+    ),
+    pool.query(
+      `SELECT
+         date_trunc('${unit}', lm.created_at) AS period,
+         COUNT(*)::int AS messages,
+         COUNT(DISTINCT lm.lead_uuid)::int AS conversations
+       ${botChartFrom}
+       GROUP BY 1
+       ORDER BY 1 ASC`,
+      botChartWhere.params,
     ),
   ]);
 
-  const table: SalespersonPerformanceRow[] = tableRows.rows.map((row) => ({
-    id: row.id as string,
-    name: row.full_name as string,
-    totalMessages: row.total_messages as number,
-    totalConversations: row.total_conversations as number,
-    last30DaysMessages: row.last30_messages as number,
-    last30DaysConversations: row.last30_conversations as number,
-    todayMessages: row.today_messages as number,
-    todayConversations: row.today_conversations as number,
-  }));
+  const humanTable: SalespersonPerformanceRow[] = humanTableRows.rows.map(
+    (row) => ({
+      id: row.id as string,
+      name: row.full_name as string,
+      totalMessages: row.total_messages as number,
+      totalConversations: row.total_conversations as number,
+      last30DaysMessages: row.last30_messages as number,
+      last30DaysConversations: row.last30_conversations as number,
+      todayMessages: row.today_messages as number,
+      todayConversations: row.today_conversations as number,
+    }),
+  );
+
+  const botTable =
+    botTableRows.rows.length > 0
+      ? mapBotTableRow(botTableRows.rows[0] as Record<string, unknown>)
+      : null;
+
+  const table = sortPerformanceRows(
+    botTable ? [...humanTable, botTable] : humanTable,
+  );
 
   const salespeople: FilterOption[] = table.map((row) => ({
     id: row.id,
@@ -289,12 +389,20 @@ export async function getCrmSalesAnalytics(
   );
 
   const { messages, conversations } = pivotTimeSeries(
-    seriesRows.rows.map((row) => ({
-      period: row.period as Date,
-      salesperson_id: row.salesperson_id as string,
-      messages: row.messages as number,
-      conversations: row.conversations as number,
-    })),
+    [
+      ...humanSeriesRows.rows.map((row) => ({
+        period: row.period as Date,
+        salesperson_id: row.salesperson_id as string,
+        messages: row.messages as number,
+        conversations: row.conversations as number,
+      })),
+      ...botSeriesRows.rows.map((row) => ({
+        period: row.period as Date,
+        salesperson_id: BOT_AGENT_ID,
+        messages: row.messages as number,
+        conversations: row.conversations as number,
+      })),
+    ],
     granularity,
     selectedSet,
   );

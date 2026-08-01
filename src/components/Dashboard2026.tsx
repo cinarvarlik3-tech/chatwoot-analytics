@@ -5,7 +5,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { BarChart3, Filter } from "lucide-react";
+import { BarChart3, Bot, Filter } from "lucide-react";
 import { BreakdownPieChart } from "@/components/BreakdownPieChart";
 import { CrmFilterModal } from "@/components/CrmFilterModal";
 import { SalespersonPerformanceTable } from "@/components/SalespersonPerformanceTable";
@@ -288,6 +288,10 @@ export function Dashboard2026() {
           secondaryLabel="Benzersiz Telefon"
           secondarySubtitle="Lead sayısı"
           secondaryValue={analytics?.totals.uniquePhones ?? 0}
+          tertiaryLabel="Otomasyon Mesajı"
+          tertiarySubtitle="Bot / kural yanıtları"
+          tertiaryValue={analytics?.totals.automationMessages ?? 0}
+          tertiaryIcon={Bot}
           loading={loading && !analytics}
         />
 
@@ -329,7 +333,7 @@ export function Dashboard2026() {
         />
 
         <SalespersonTimeSeriesChart
-          title="Zaman İçinde Satışçı Performansı"
+          title="Zaman İçinde Agent Performansı"
           messagesData={salesAnalytics?.messagesTimeSeries ?? []}
           conversationsData={salesAnalytics?.conversationsTimeSeries ?? []}
           seriesMeta={salesAnalytics?.seriesMeta ?? []}
