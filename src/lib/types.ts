@@ -94,19 +94,24 @@ export interface CrmAnalyticsResponse {
     incomingMessages: number;
     uniquePhones: number;
     automationMessages: number;
+    /** Outgoing messages excluding bot/automation rows. */
+    humanOutgoingMessages: number;
+    /** humanOutgoingMessages / uniquePhones (0 when there are no leads). */
+    humanOutgoingPerLead: number;
   };
   messages: CrmMetricBundle;
   leads: CrmMetricBundle;
   bySchoolTable: SchoolTableRow[];
 }
 
+/** Counts are lifetime / current UTC+3 month / today in UTC+3, never date-filtered. */
 export interface SalespersonPerformanceRow {
   id: string;
   name: string;
   totalMessages: number;
   totalConversations: number;
-  last30DaysMessages: number;
-  last30DaysConversations: number;
+  thisMonthMessages: number;
+  thisMonthConversations: number;
   todayMessages: number;
   todayConversations: number;
 }

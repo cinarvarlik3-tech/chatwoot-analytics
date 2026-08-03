@@ -14,6 +14,15 @@ import {
   AUTOMATION_OUTBOUND_MESSAGE_FILTER,
   HUMAN_OUTBOUND_MESSAGE_FILTER,
 } from "./crmMessageFilters";
+import {
+  currentMonthFilter,
+  endDateFilter,
+  granularityUnit,
+  localPeriodText,
+  parsePeriodText,
+  startDateFilter,
+  todayFilter,
+} from "./reportingTime";
 import type {
   CrmDashboardFilters,
   CrmSalesAnalyticsResponse,
@@ -103,34 +112,17 @@ async function buildOutboundWhere(
 
   if (includeDateRange && filters.startDate) {
     params.push(filters.startDate);
-    parts.push(`lm.created_at >= $${params.length}::timestamp`);
+    parts.push(startDateFilter("lm.created_at", `$${params.length}`));
   }
   if (includeDateRange && filters.endDate) {
     params.push(filters.endDate);
-    parts.push(
-      `lm.created_at < ($${params.length}::date + interval '1 day')`,
-    );
+    parts.push(endDateFilter("lm.created_at", `$${params.length}`));
   }
 
   const campuses = await resolveCampusFilters(filters.parentUniversities);
   appendSchoolFilter(parts, params, filters.parentUniversities, campuses);
 
   return { sql: `WHERE ${parts.join(" AND ")}`, params };
-}
-
-function granularityUnit(granularity: Granularity): string {
-  switch (granularity) {
-    case "daily":
-      return "day";
-    case "weekly":
-      return "week";
-    case "monthly":
-      return "month";
-    case "yearly":
-      return "year";
-    default:
-      return "month";
-  }
 }
 
 function formatWeeklyLabel(date: Date): string {
@@ -156,7 +148,7 @@ function formatPeriodLabel(date: Date, granularity: Granularity): string {
 
 function pivotTimeSeries(
   rows: {
-    period: Date;
+    period: string;
     salesperson_id: string;
     messages: number;
     conversations: number;
@@ -170,13 +162,12 @@ function pivotTimeSeries(
   for (const row of rows) {
     if (!selectedIds.has(row.salesperson_id)) continue;
 
-    const periodDate = new Date(row.period);
-    const periodKey = periodDate.toISOString();
+    const periodKey = row.period;
 
     if (!messagesMap.has(periodKey)) {
       const base = {
         period: periodKey,
-        label: formatPeriodLabel(periodDate, granularity),
+        label: formatPeriodLabel(parsePeriodText(periodKey), granularity),
       };
       messagesMap.set(periodKey, { ...base });
       conversationsMap.set(periodKey, { ...base });
@@ -195,14 +186,40 @@ function pivotTimeSeries(
   };
 }
 
-function mapBotTableRow(row: Record<string, unknown>): SalespersonPerformanceRow {
+/**
+ * Table columns: lifetime totals, current UTC+3 calendar month, and today in
+ * UTC+3. Shared by the human and bot queries so the two can never drift, and
+ * reused as the definition the chart's daily bucket must agree with.
+ */
+const TABLE_COLUMNS_SQL = `
+  COUNT(*)::int AS total_messages,
+  COUNT(DISTINCT lm.lead_uuid)::int AS total_conversations,
+  COUNT(*) FILTER (
+    WHERE ${currentMonthFilter("lm.created_at")}
+  )::int AS this_month_messages,
+  COUNT(DISTINCT lm.lead_uuid) FILTER (
+    WHERE ${currentMonthFilter("lm.created_at")}
+  )::int AS this_month_conversations,
+  COUNT(*) FILTER (
+    WHERE ${todayFilter("lm.created_at")}
+  )::int AS today_messages,
+  COUNT(DISTINCT lm.lead_uuid) FILTER (
+    WHERE ${todayFilter("lm.created_at")}
+  )::int AS today_conversations
+`;
+
+function mapTableRow(
+  row: Record<string, unknown>,
+  id: string,
+  name: string,
+): SalespersonPerformanceRow {
   return {
-    id: BOT_AGENT_ID,
-    name: BOT_AGENT_NAME,
+    id,
+    name,
     totalMessages: row.total_messages as number,
     totalConversations: row.total_conversations as number,
-    last30DaysMessages: row.last30_messages as number,
-    last30DaysConversations: row.last30_conversations as number,
+    thisMonthMessages: row.this_month_messages as number,
+    thisMonthConversations: row.this_month_conversations as number,
     todayMessages: row.today_messages as number,
     todayConversations: row.today_conversations as number,
   };
@@ -286,50 +303,19 @@ export async function getCrmSalesAnalytics(
       `SELECT
          sp.id,
          sp.full_name,
-         COUNT(*)::int AS total_messages,
-         COUNT(DISTINCT lm.lead_uuid)::int AS total_conversations,
-         COUNT(*) FILTER (
-           WHERE lm.created_at >= NOW() - interval '30 days'
-         )::int AS last30_messages,
-         COUNT(DISTINCT lm.lead_uuid) FILTER (
-           WHERE lm.created_at >= NOW() - interval '30 days'
-         )::int AS last30_conversations,
-         COUNT(*) FILTER (
-           WHERE (lm.created_at AT TIME ZONE 'Europe/Istanbul')::date =
-                 (CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Istanbul')::date
-         )::int AS today_messages,
-         COUNT(DISTINCT lm.lead_uuid) FILTER (
-           WHERE (lm.created_at AT TIME ZONE 'Europe/Istanbul')::date =
-                 (CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Istanbul')::date
-         )::int AS today_conversations
+         ${TABLE_COLUMNS_SQL}
        ${humanOutboundFrom}
        GROUP BY sp.id, sp.full_name`,
       humanTableWhere.params,
     ),
     pool.query(
-      `SELECT
-         COUNT(*)::int AS total_messages,
-         COUNT(DISTINCT lm.lead_uuid)::int AS total_conversations,
-         COUNT(*) FILTER (
-           WHERE lm.created_at >= NOW() - interval '30 days'
-         )::int AS last30_messages,
-         COUNT(DISTINCT lm.lead_uuid) FILTER (
-           WHERE lm.created_at >= NOW() - interval '30 days'
-         )::int AS last30_conversations,
-         COUNT(*) FILTER (
-           WHERE (lm.created_at AT TIME ZONE 'Europe/Istanbul')::date =
-                 (CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Istanbul')::date
-         )::int AS today_messages,
-         COUNT(DISTINCT lm.lead_uuid) FILTER (
-           WHERE (lm.created_at AT TIME ZONE 'Europe/Istanbul')::date =
-                 (CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Istanbul')::date
-         )::int AS today_conversations
+      `SELECT ${TABLE_COLUMNS_SQL}
        ${botOutboundFrom}`,
       botTableWhere.params,
     ),
     pool.query(
       `SELECT
-         date_trunc('${unit}', lm.created_at) AS period,
+         ${localPeriodText(unit, "lm.created_at")} AS period,
          sp.id AS salesperson_id,
          sp.full_name,
          COUNT(*)::int AS messages,
@@ -341,7 +327,7 @@ export async function getCrmSalesAnalytics(
     ),
     pool.query(
       `SELECT
-         date_trunc('${unit}', lm.created_at) AS period,
+         ${localPeriodText(unit, "lm.created_at")} AS period,
          COUNT(*)::int AS messages,
          COUNT(DISTINCT lm.lead_uuid)::int AS conversations
        ${botChartFrom}
@@ -352,21 +338,16 @@ export async function getCrmSalesAnalytics(
   ]);
 
   const humanTable: SalespersonPerformanceRow[] = humanTableRows.rows.map(
-    (row) => ({
-      id: row.id as string,
-      name: row.full_name as string,
-      totalMessages: row.total_messages as number,
-      totalConversations: row.total_conversations as number,
-      last30DaysMessages: row.last30_messages as number,
-      last30DaysConversations: row.last30_conversations as number,
-      todayMessages: row.today_messages as number,
-      todayConversations: row.today_conversations as number,
-    }),
+    (row) => mapTableRow(row, row.id as string, row.full_name as string),
   );
 
   const botTable =
     botTableRows.rows.length > 0
-      ? mapBotTableRow(botTableRows.rows[0] as Record<string, unknown>)
+      ? mapTableRow(
+          botTableRows.rows[0] as Record<string, unknown>,
+          BOT_AGENT_ID,
+          BOT_AGENT_NAME,
+        )
       : null;
 
   const table = sortPerformanceRows(
@@ -391,13 +372,13 @@ export async function getCrmSalesAnalytics(
   const { messages, conversations } = pivotTimeSeries(
     [
       ...humanSeriesRows.rows.map((row) => ({
-        period: row.period as Date,
+        period: row.period as string,
         salesperson_id: row.salesperson_id as string,
         messages: row.messages as number,
         conversations: row.conversations as number,
       })),
       ...botSeriesRows.rows.map((row) => ({
-        period: row.period as Date,
+        period: row.period as string,
         salesperson_id: BOT_AGENT_ID,
         messages: row.messages as number,
         conversations: row.conversations as number,

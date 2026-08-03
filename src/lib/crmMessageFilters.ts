@@ -24,3 +24,15 @@ export const AUTOMATION_OUTBOUND_MESSAGE_FILTER = `
   AND lm.is_automation = true
   AND (lm.direction = 'outgoing' OR lm.message_type = 'outgoing')
 `;
+
+/**
+ * All outgoing messages minus bot messages, i.e. the complement of
+ * AUTOMATION_OUTBOUND_MESSAGE_FILTER over the same outbound set.
+ * Broader than HUMAN_OUTBOUND_MESSAGE_FILTER: it also keeps mis-synced rows
+ * whose sender metadata is missing but which are not classified as automation.
+ */
+export const HUMAN_OUTGOING_MESSAGE_FILTER = `
+  lm.is_private = false
+  AND COALESCE(lm.is_automation, false) = false
+  AND (lm.direction = 'outgoing' OR lm.message_type = 'outgoing')
+`;

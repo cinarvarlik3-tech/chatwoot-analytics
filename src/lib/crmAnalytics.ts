@@ -14,7 +14,16 @@ import { getCrmPool } from "./crmDb";
 import {
   AUTOMATION_OUTBOUND_MESSAGE_FILTER,
   HUMAN_INCOMING_MESSAGE_FILTER,
+  HUMAN_OUTGOING_MESSAGE_FILTER,
 } from "./crmMessageFilters";
+import {
+  endDateFilter,
+  granularityUnit,
+  localDateText,
+  localPeriodText,
+  parsePeriodText,
+  startDateFilter,
+} from "./reportingTime";
 import type {
   BreakdownPoint,
   CrmAnalyticsResponse,
@@ -105,13 +114,11 @@ async function buildMessageWhere(
 
   if (filters.startDate) {
     params.push(filters.startDate);
-    parts.push(`lm.created_at >= $${params.length}::timestamp`);
+    parts.push(startDateFilter("lm.created_at", `$${params.length}`));
   }
   if (filters.endDate) {
     params.push(filters.endDate);
-    parts.push(
-      `lm.created_at < ($${params.length}::date + interval '1 day')`,
-    );
+    parts.push(endDateFilter("lm.created_at", `$${params.length}`));
   }
 
   const campuses = await resolveCampusFilters(filters.parentUniversities);
@@ -128,13 +135,11 @@ async function buildLeadWhere(
 
   if (filters.startDate) {
     params.push(filters.startDate);
-    parts.push(`l.created_at >= $${params.length}::timestamp`);
+    parts.push(startDateFilter("l.created_at", `$${params.length}`));
   }
   if (filters.endDate) {
     params.push(filters.endDate);
-    parts.push(
-      `l.created_at < ($${params.length}::date + interval '1 day')`,
-    );
+    parts.push(endDateFilter("l.created_at", `$${params.length}`));
   }
 
   const campuses = await resolveCampusFilters(filters.parentUniversities);
@@ -142,21 +147,6 @@ async function buildLeadWhere(
 
   const sql = parts.length ? `WHERE ${parts.join(" AND ")}` : "";
   return { sql, params };
-}
-
-function granularityUnit(granularity: Granularity): string {
-  switch (granularity) {
-    case "daily":
-      return "day";
-    case "weekly":
-      return "week";
-    case "monthly":
-      return "month";
-    case "yearly":
-      return "year";
-    default:
-      return "month";
-  }
 }
 
 function formatWeeklyLabel(date: Date): string {
@@ -181,17 +171,14 @@ function formatPeriodLabel(date: Date, granularity: Granularity): string {
 }
 
 function mapTimeSeries(
-  rows: { period: Date; value: number }[],
+  rows: { period: string; value: number }[],
   granularity: Granularity,
 ): TimeSeriesPoint[] {
-  return rows.map((row) => {
-    const periodDate = new Date(row.period);
-    return {
-      period: periodDate.toISOString(),
-      label: formatPeriodLabel(periodDate, granularity),
-      value: row.value,
-    };
-  });
+  return rows.map((row) => ({
+    period: row.period,
+    label: formatPeriodLabel(parsePeriodText(row.period), granularity),
+    value: row.value,
+  }));
 }
 
 function aggregateCampusRows(
@@ -267,10 +254,10 @@ export async function getCrmFilterOptions(): Promise<CrmFilterOptionsResponse> {
     ),
     pool.query(
       `SELECT
-         MIN(l.created_at)::date AS lead_min,
-         MAX(l.created_at)::date AS lead_max,
-         MIN(lm.created_at)::date AS msg_min,
-         MAX(lm.created_at)::date AS msg_max
+         MIN(${localDateText("l.created_at")}) AS lead_min,
+         MAX(${localDateText("l.created_at")}) AS lead_max,
+         MIN(${localDateText("lm.created_at")}) AS msg_min,
+         MAX(${localDateText("lm.created_at")}) AS msg_max
        FROM leads l
        LEFT JOIN lead_messages lm ON lm.lead_uuid = l.uuid
        WHERE l.is_deleted = false`,
@@ -286,22 +273,23 @@ export async function getCrmFilterOptions(): Promise<CrmFilterOptionsResponse> {
     parentSet.set(key, getParentLabel(key));
   }
 
+  // Already UTC+3 YYYY-MM-DD text; compare as strings to avoid a Date round-trip
+  // reinterpreting them in the server's timezone.
   const minDate = [dates.rows[0]?.msg_min, dates.rows[0]?.lead_min]
     .filter(Boolean)
-    .map((value) => new Date(value as Date))
-    .sort((a, b) => a.getTime() - b.getTime())[0];
+    .sort()[0] as string | undefined;
   const maxDate = [dates.rows[0]?.msg_max, dates.rows[0]?.lead_max]
     .filter(Boolean)
-    .map((value) => new Date(value as Date))
-    .sort((a, b) => b.getTime() - a.getTime())[0];
+    .sort()
+    .reverse()[0] as string | undefined;
 
   return {
     parentUniversities: [...parentSet.entries()]
       .map(([id, name]) => ({ id, name }))
       .sort((a, b) => a.name.localeCompare(b.name, "tr")),
     dateRange: {
-      min: minDate?.toISOString?.()?.slice(0, 10) ?? "",
-      max: maxDate?.toISOString?.()?.slice(0, 10) ?? "",
+      min: minDate ?? "",
+      max: maxDate ?? "",
     },
   };
 }
@@ -315,6 +303,10 @@ export async function getCrmAnalytics(
   const automationWhere = await buildMessageWhere(
     filters,
     AUTOMATION_OUTBOUND_MESSAGE_FILTER,
+  );
+  const humanOutgoingWhere = await buildMessageWhere(
+    filters,
+    HUMAN_OUTGOING_MESSAGE_FILTER,
   );
   const leadWhere = await buildLeadWhere(filters);
   const unit = granularityUnit(granularity);
@@ -339,9 +331,17 @@ export async function getCrmAnalytics(
     ${automationWhere.sql}
   `;
 
+  const humanOutgoingFrom = `
+    FROM lead_messages lm
+    INNER JOIN leads l ON l.uuid = lm.lead_uuid
+    LEFT JOIN lead_details ld ON ld.lead_uuid = l.uuid
+    ${humanOutgoingWhere.sql}
+  `;
+
   const [
     messageTotals,
     automationTotals,
+    humanOutgoingTotals,
     leadTotals,
     messageTimeSeries,
     leadTimeSeries,
@@ -359,18 +359,23 @@ export async function getCrmAnalytics(
       automationWhere.params,
     ),
     pool.query(
+      `SELECT COUNT(*)::int AS count ${humanOutgoingFrom}`,
+      humanOutgoingWhere.params,
+    ),
+    pool.query(
       `SELECT COUNT(DISTINCT l.lead_phone)::int AS count ${leadFrom}`,
       leadWhere.params,
     ),
     pool.query(
-      `SELECT date_trunc('${unit}', lm.created_at) AS period, COUNT(*)::int AS value
+      `SELECT ${localPeriodText(unit, "lm.created_at")} AS period,
+              COUNT(*)::int AS value
        ${messageFrom}
        GROUP BY 1
        ORDER BY 1 ASC`,
       messageWhere.params,
     ),
     pool.query(
-      `SELECT date_trunc('${unit}', l.created_at) AS period,
+      `SELECT ${localPeriodText(unit, "l.created_at")} AS period,
               COUNT(DISTINCT l.lead_phone)::int AS value
        ${leadFrom}
        GROUP BY 1
@@ -412,11 +417,17 @@ export async function getCrmAnalytics(
   const bySchoolMessages = aggregateCampusRows(messageByCampus.rows);
   const bySchoolLeads = aggregateCampusRows(leadByCampus.rows);
 
+  const uniquePhones: number = leadTotals.rows[0]?.count ?? 0;
+  const humanOutgoingMessages: number = humanOutgoingTotals.rows[0]?.count ?? 0;
+
   return {
     totals: {
       incomingMessages: messageTotals.rows[0]?.count ?? 0,
-      uniquePhones: leadTotals.rows[0]?.count ?? 0,
+      uniquePhones,
       automationMessages: automationTotals.rows[0]?.count ?? 0,
+      humanOutgoingMessages,
+      humanOutgoingPerLead:
+        uniquePhones > 0 ? humanOutgoingMessages / uniquePhones : 0,
     },
     messages: {
       timeSeries: mapTimeSeries(messageTimeSeries.rows, granularity),

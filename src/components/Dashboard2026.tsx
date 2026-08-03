@@ -5,7 +5,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { BarChart3, Bot, Filter } from "lucide-react";
+import { BarChart3, Bot, Filter, Send } from "lucide-react";
 import { BreakdownPieChart } from "@/components/BreakdownPieChart";
 import { CrmFilterModal } from "@/components/CrmFilterModal";
 import { SalespersonPerformanceTable } from "@/components/SalespersonPerformanceTable";
@@ -292,6 +292,11 @@ export function Dashboard2026() {
           tertiarySubtitle="Bot / kural yanıtları"
           tertiaryValue={analytics?.totals.automationMessages ?? 0}
           tertiaryIcon={Bot}
+          quaternaryLabel="Lead Başına İnsan Mesajı"
+          quaternarySubtitle="Bot hariç giden mesaj / lead"
+          quaternaryValue={analytics?.totals.humanOutgoingPerLead ?? 0}
+          quaternaryDecimals={2}
+          quaternaryIcon={Send}
           loading={loading && !analytics}
         />
 

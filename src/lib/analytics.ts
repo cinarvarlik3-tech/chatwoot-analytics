@@ -5,6 +5,14 @@
 import { format } from "date-fns";
 import { tr } from "date-fns/locale";
 import { getPool } from "./db";
+import {
+  endDateFilter,
+  granularityUnit,
+  localDateText,
+  localPeriodText,
+  parsePeriodText,
+  startDateFilter,
+} from "./reportingTime";
 import type {
   AnalyticsResponse,
   BreakdownPoint,
@@ -60,13 +68,11 @@ function buildMessageWhere(filters: DashboardFilters): WhereClause {
 
   if (filters.startDate) {
     params.push(filters.startDate);
-    parts.push(`m.created_at >= $${params.length}::timestamp`);
+    parts.push(startDateFilter("m.created_at", `$${params.length}`));
   }
   if (filters.endDate) {
     params.push(filters.endDate);
-    parts.push(
-      `m.created_at < ($${params.length}::date + interval '1 day')`,
-    );
+    parts.push(endDateFilter("m.created_at", `$${params.length}`));
   }
   appendUniversityFilter(parts, params, filters.universities);
   if (filters.channelIds.length > 0) {
@@ -87,13 +93,11 @@ function buildLeadWhere(filters: DashboardFilters): WhereClause {
 
   if (filters.startDate) {
     params.push(filters.startDate);
-    parts.push(`c.created_at >= $${params.length}::timestamp`);
+    parts.push(startDateFilter("c.created_at", `$${params.length}`));
   }
   if (filters.endDate) {
     params.push(filters.endDate);
-    parts.push(
-      `c.created_at < ($${params.length}::date + interval '1 day')`,
-    );
+    parts.push(endDateFilter("c.created_at", `$${params.length}`));
   }
   appendUniversityFilter(parts, params, filters.universities, "c.university");
   if (filters.channelIds.length > 0) {
@@ -103,24 +107,6 @@ function buildLeadWhere(filters: DashboardFilters): WhereClause {
 
   const sql = parts.length ? `WHERE ${parts.join(" AND ")}` : "";
   return { sql, params };
-}
-
-/**
- * Maps UI granularity to PostgreSQL date_trunc unit.
- */
-function granularityUnit(granularity: Granularity): string {
-  switch (granularity) {
-    case "daily":
-      return "day";
-    case "weekly":
-      return "week";
-    case "monthly":
-      return "month";
-    case "yearly":
-      return "year";
-    default:
-      return "month";
-  }
 }
 
 /**
@@ -170,23 +156,26 @@ export async function getFilterOptions(): Promise<FilterOptionsResponse> {
          ORDER BY i.name ASC`,
       ),
       pool.query(
-        `SELECT MIN(created_at)::date AS min, MAX(created_at)::date AS max
+        `SELECT MIN(${localDateText("created_at")}) AS min,
+                MAX(${localDateText("created_at")}) AS max
          FROM messages`,
       ),
       pool.query(
-        `SELECT MIN(created_at)::date AS min, MAX(created_at)::date AS max
+        `SELECT MIN(${localDateText("created_at")}) AS min,
+                MAX(${localDateText("created_at")}) AS max
          FROM conversations`,
       ),
     ]);
 
+  // Already UTC+3 YYYY-MM-DD text; compared as strings so the server timezone
+  // cannot shift the picker bounds by a day.
   const minDate = [messageDates.rows[0]?.min, conversationDates.rows[0]?.min]
     .filter(Boolean)
-    .map((value) => new Date(value as Date))
-    .sort((a, b) => a.getTime() - b.getTime())[0];
+    .sort()[0] as string | undefined;
   const maxDate = [messageDates.rows[0]?.max, conversationDates.rows[0]?.max]
     .filter(Boolean)
-    .map((value) => new Date(value as Date))
-    .sort((a, b) => b.getTime() - a.getTime())[0];
+    .sort()
+    .reverse()[0] as string | undefined;
 
   return {
     universities: [
@@ -204,8 +193,8 @@ export async function getFilterOptions(): Promise<FilterOptionsResponse> {
       name: row.name as string,
     })),
     dateRange: {
-      min: minDate?.toISOString?.()?.slice(0, 10) ?? "",
-      max: maxDate?.toISOString?.()?.slice(0, 10) ?? "",
+      min: minDate ?? "",
+      max: maxDate ?? "",
     },
   };
 }
@@ -214,17 +203,14 @@ export async function getFilterOptions(): Promise<FilterOptionsResponse> {
  * Maps SQL time-series rows to chart points.
  */
 function mapTimeSeries(
-  rows: { period: Date; value: number }[],
+  rows: { period: string; value: number }[],
   granularity: Granularity,
 ): TimeSeriesPoint[] {
-  return rows.map((row) => {
-    const periodDate = new Date(row.period);
-    return {
-      period: periodDate.toISOString(),
-      label: formatPeriodLabel(periodDate, granularity),
-      value: row.value,
-    };
-  });
+  return rows.map((row) => ({
+    period: row.period,
+    label: formatPeriodLabel(parsePeriodText(row.period), granularity),
+    value: row.value,
+  }));
 }
 
 /**
@@ -323,14 +309,16 @@ export async function getAnalytics(
       leadWhere.params,
     ),
     pool.query(
-      `SELECT date_trunc('${unit}', m.created_at) AS period, COUNT(*)::int AS value
+      `SELECT ${localPeriodText(unit, "m.created_at")} AS period,
+              COUNT(*)::int AS value
        ${messageFrom}
        GROUP BY 1
        ORDER BY 1 ASC`,
       messageWhere.params,
     ),
     pool.query(
-      `SELECT date_trunc('${unit}', c.created_at) AS period, COUNT(*)::int AS value
+      `SELECT ${localPeriodText(unit, "c.created_at")} AS period,
+              COUNT(*)::int AS value
        ${leadFrom}
        GROUP BY 1
        ORDER BY 1 ASC`,

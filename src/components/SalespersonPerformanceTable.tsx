@@ -54,6 +54,9 @@ export function SalespersonPerformanceTable({
             <p className="text-sm text-slate-500">
               Giden mesaj ve konuşma sayıları (satışçılar + Bot)
             </p>
+            <p className="text-xs text-slate-400">
+              Tarih filtrelerinden bağımsızdır · UTC+3
+            </p>
           </div>
           <MetricToggle
             value={metric}
@@ -73,7 +76,7 @@ export function SalespersonPerformanceTable({
                 Toplam {valueSuffix}
               </th>
               <th className={`${cellClass} font-medium`}>
-                Son 30 Gün {valueSuffix}
+                Bu Ay {valueSuffix}
               </th>
               <th className={`${cellClass} font-medium`}>
                 Bugün {valueSuffix}
@@ -99,10 +102,10 @@ export function SalespersonPerformanceTable({
                   metric === "messages"
                     ? row.totalMessages
                     : row.totalConversations;
-                const last30 =
+                const thisMonth =
                   metric === "messages"
-                    ? row.last30DaysMessages
-                    : row.last30DaysConversations;
+                    ? row.thisMonthMessages
+                    : row.thisMonthConversations;
                 const today =
                   metric === "messages"
                     ? row.todayMessages
@@ -117,7 +120,7 @@ export function SalespersonPerformanceTable({
                       {formatNumber(total)}
                     </td>
                     <td className={`${cellClass} tabular-nums text-slate-700`}>
-                      {formatNumber(last30)}
+                      {formatNumber(thisMonth)}
                     </td>
                     <td className={`${cellClass} tabular-nums text-slate-700`}>
                       {formatNumber(today)}
