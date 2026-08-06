@@ -105,7 +105,7 @@ function appendSchoolFilter(
   appendCampusFilter(parts, params, campuses, "ld.university");
 }
 
-async function buildMessageWhere(
+export async function buildMessageWhere(
   filters: CrmDashboardFilters,
   messageFilter: string = INCOMING_MESSAGE_FILTER,
 ): Promise<WhereClause> {

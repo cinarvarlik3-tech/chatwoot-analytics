@@ -36,3 +36,9 @@ export const HUMAN_OUTGOING_MESSAGE_FILTER = `
   AND COALESCE(lm.is_automation, false) = false
   AND (lm.direction = 'outgoing' OR lm.message_type = 'outgoing')
 `;
+
+/** All outbound messages regardless of automation classification (bot + human). */
+export const ALL_OUTBOUND_MESSAGE_FILTER = `
+  lm.is_private = false
+  AND (lm.direction = 'outgoing' OR lm.message_type = 'outgoing')
+`;

@@ -12,12 +12,15 @@ import { SalespersonPerformanceTable } from "@/components/SalespersonPerformance
 import { SalespersonTimeSeriesChart } from "@/components/SalespersonTimeSeriesChart";
 import { SchoolBreakdownTable } from "@/components/SchoolBreakdownTable";
 import { StatCards } from "@/components/StatCards";
+import { TemplateUsagePieChart } from "@/components/TemplateUsagePieChart";
 import { TimeSeriesChart } from "@/components/TimeSeriesChart";
 import type {
+  BreakdownPoint,
   CrmAnalyticsResponse,
   CrmDashboardFilters,
   CrmFilterOptionsResponse,
   CrmSalesAnalyticsResponse,
+  CrmTemplateUsageResponse,
   Granularity,
   MetricMode,
 } from "@/lib/types";
@@ -46,6 +49,16 @@ function buildQuery(
     params.append("parentUniversity", name),
   );
   salespersonIds.forEach((id) => params.append("salespersonId", id));
+  return params.toString();
+}
+
+function buildFilterQuery(filters: CrmDashboardFilters): string {
+  const params = new URLSearchParams();
+  if (filters.startDate) params.set("startDate", filters.startDate);
+  if (filters.endDate) params.set("endDate", filters.endDate);
+  filters.parentUniversities.forEach((name) =>
+    params.append("parentUniversity", name),
+  );
   return params.toString();
 }
 
@@ -165,6 +178,8 @@ export function Dashboard2026() {
   const [salesGranularity, setSalesGranularity] =
     useState<Granularity>("weekly");
   const [metric, setMetric] = useState<MetricMode>("messages");
+  const [templateUsage, setTemplateUsage] = useState<BreakdownPoint[]>([]);
+  const [templateUsageLoading, setTemplateUsageLoading] = useState(true);
   const [filterOpen, setFilterOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [salesLoading, setSalesLoading] = useState(true);
@@ -222,6 +237,22 @@ export function Dashboard2026() {
     }
   }, [filters, salesGranularity, selectedSalespeople]);
 
+  const loadTemplateUsage = useCallback(async () => {
+    setTemplateUsageLoading(true);
+    try {
+      const res = await fetch(
+        `/api/crm/template-usage?${buildFilterQuery(filters)}`,
+      );
+      if (!res.ok) throw new Error("Şablon kullanım verileri alınamadı");
+      const data: CrmTemplateUsageResponse = await res.json();
+      setTemplateUsage(data.items);
+    } catch {
+      setError("Şablon kullanım verileri yüklenirken bir hata oluştu");
+    } finally {
+      setTemplateUsageLoading(false);
+    }
+  }, [filters]);
+
   useEffect(() => {
     loadAnalytics();
   }, [loadAnalytics]);
@@ -229,6 +260,10 @@ export function Dashboard2026() {
   useEffect(() => {
     loadSalesAnalytics();
   }, [loadSalesAnalytics]);
+
+  useEffect(() => {
+    loadTemplateUsage();
+  }, [loadTemplateUsage]);
 
   const filterBadge = useMemo(() => activeFilterCount(filters), [filters]);
 
@@ -328,6 +363,11 @@ export function Dashboard2026() {
           data={analytics?.bySchoolTable ?? []}
           loading={loading}
           entityLabel="Üniversite"
+        />
+
+        <TemplateUsagePieChart
+          data={templateUsage}
+          loading={templateUsageLoading}
         />
 
         <SalespersonPerformanceTable

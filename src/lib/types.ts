@@ -89,6 +89,10 @@ export interface CrmMetricBundle {
   bySchool: BreakdownPoint[];
 }
 
+export interface CrmTemplateUsageResponse {
+  items: BreakdownPoint[];
+}
+
 export interface CrmAnalyticsResponse {
   totals: {
     incomingMessages: number;
