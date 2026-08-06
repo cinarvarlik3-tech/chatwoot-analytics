@@ -38,17 +38,41 @@ interface WhereClause {
   params: unknown[];
 }
 
-const HUMAN_OUTBOUND_MESSAGE_FILTER_LOCAL = HUMAN_OUTBOUND_MESSAGE_FILTER;
-
 /** Synthetic agent id for automation/bot outbound messages in charts. */
 export const BOT_AGENT_ID = "__bot__";
 export const BOT_AGENT_NAME = "Bot";
 
+/**
+ * Agents are keyed by the Chatwoot user id carried on the message itself rather
+ * than by a `salespeople` row, so an agent who is actively replying appears the
+ * day they start instead of waiting for someone to add them to the CRM roster.
+ */
+const AGENT_ID_SQL = `('cw-' || lm.sender_id::text)`;
+
+/**
+ * The roster is advisory: it supplies a tidier display name and still lets a
+ * deactivated salesperson stay hidden, but a missing row no longer erases an
+ * agent's numbers.
+ */
 const SALESPERSON_JOIN = `
-  INNER JOIN salespeople sp
+  LEFT JOIN salespeople sp
     ON sp.chatwoot_user_id = lm.sender_id
-   AND sp.is_active = true
-   AND sp.chatwoot_user_id IS NOT NULL
+`;
+
+/** Roster name when there is one, otherwise the name Chatwoot synced. */
+const AGENT_NAME_SQL = `
+  COALESCE(
+    MAX(sp.full_name),
+    MAX(lm.sender_name),
+    'Agent #' || lm.sender_id::text
+  )
+`;
+
+/** Human outbound messages attributable to a named, non-deactivated agent. */
+const ATTRIBUTED_AGENT_MESSAGE_FILTER = `
+  ${HUMAN_OUTBOUND_MESSAGE_FILTER}
+  AND lm.sender_id IS NOT NULL
+  AND COALESCE(sp.is_active, true) = true
 `;
 
 async function loadCampusValues(): Promise<string[]> {
@@ -246,12 +270,12 @@ export async function getCrmSalesAnalytics(
   const pool = getCrmPool();
   const humanChartWhere = await buildOutboundWhere(
     filters,
-    HUMAN_OUTBOUND_MESSAGE_FILTER_LOCAL,
+    ATTRIBUTED_AGENT_MESSAGE_FILTER,
     { includeDateRange: true },
   );
   const humanTableWhere = await buildOutboundWhere(
     filters,
-    HUMAN_OUTBOUND_MESSAGE_FILTER_LOCAL,
+    ATTRIBUTED_AGENT_MESSAGE_FILTER,
     { includeDateRange: false },
   );
   const botChartWhere = await buildOutboundWhere(
@@ -301,11 +325,11 @@ export async function getCrmSalesAnalytics(
     await Promise.all([
     pool.query(
       `SELECT
-         sp.id,
-         sp.full_name,
+         ${AGENT_ID_SQL} AS id,
+         ${AGENT_NAME_SQL} AS full_name,
          ${TABLE_COLUMNS_SQL}
        ${humanOutboundFrom}
-       GROUP BY sp.id, sp.full_name`,
+       GROUP BY lm.sender_id`,
       humanTableWhere.params,
     ),
     pool.query(
@@ -316,13 +340,12 @@ export async function getCrmSalesAnalytics(
     pool.query(
       `SELECT
          ${localPeriodText(unit, "lm.created_at")} AS period,
-         sp.id AS salesperson_id,
-         sp.full_name,
+         ${AGENT_ID_SQL} AS salesperson_id,
          COUNT(*)::int AS messages,
          COUNT(DISTINCT lm.lead_uuid)::int AS conversations
        ${humanChartFrom}
-       GROUP BY 1, 2, 3
-       ORDER BY 1 ASC, 3 ASC`,
+       GROUP BY 1, lm.sender_id
+       ORDER BY 1 ASC, 2 ASC`,
       humanChartWhere.params,
     ),
     pool.query(
