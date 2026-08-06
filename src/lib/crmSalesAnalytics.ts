@@ -5,10 +5,7 @@
 
 import { format } from "date-fns";
 import { tr } from "date-fns/locale";
-import {
-  campusMatchesParent,
-  UNPARSED_PARENT,
-} from "./campusNormalization";
+import { appendSchoolFilter } from "./campusNormalization";
 import { getCrmPool } from "./crmDb";
 import {
   AUTOMATION_OUTBOUND_MESSAGE_FILTER,
@@ -75,56 +72,6 @@ const ATTRIBUTED_AGENT_MESSAGE_FILTER = `
   AND COALESCE(sp.is_active, true) = true
 `;
 
-async function loadCampusValues(): Promise<string[]> {
-  const pool = getCrmPool();
-  const { rows } = await pool.query(
-    `SELECT DISTINCT ld.university AS campus
-     FROM lead_details ld
-     JOIN leads l ON l.uuid = ld.lead_uuid
-     WHERE l.is_deleted = false
-       AND ld.university IS NOT NULL
-       AND ld.university <> ''`,
-  );
-  return rows.map((row) => row.campus as string);
-}
-
-async function resolveCampusFilters(parents: string[]): Promise<string[]> {
-  if (parents.length === 0) return [];
-  const campuses = await loadCampusValues();
-  return campuses.filter((campus) => campusMatchesParent(campus, parents));
-}
-
-function appendSchoolFilter(
-  parts: string[],
-  params: unknown[],
-  parentFilters: string[],
-  campuses: string[],
-): void {
-  if (parentFilters.length === 0) return;
-
-  const includesUnparsed = parentFilters.includes(UNPARSED_PARENT);
-
-  if (campuses.length > 0 && includesUnparsed) {
-    params.push(campuses);
-    parts.push(
-      `(ld.university = ANY($${params.length}::text[]) OR ld.university IS NULL OR ld.university = '' OR ld.university = 'bilinmiyor')`,
-    );
-    return;
-  }
-
-  if (includesUnparsed) {
-    parts.push(
-      `(ld.university IS NULL OR ld.university = '' OR ld.university = 'bilinmiyor')`,
-    );
-    return;
-  }
-
-  if (campuses.length > 0) {
-    params.push(campuses);
-    parts.push(`ld.university = ANY($${params.length}::text[])`);
-  }
-}
-
 async function buildOutboundWhere(
   filters: CrmDashboardFilters,
   messageFilter: string,
@@ -143,8 +90,7 @@ async function buildOutboundWhere(
     parts.push(endDateFilter("lm.created_at", `$${params.length}`));
   }
 
-  const campuses = await resolveCampusFilters(filters.parentUniversities);
-  appendSchoolFilter(parts, params, filters.parentUniversities, campuses);
+  appendSchoolFilter(parts, params, filters.parentUniversities);
 
   return { sql: `WHERE ${parts.join(" AND ")}`, params };
 }

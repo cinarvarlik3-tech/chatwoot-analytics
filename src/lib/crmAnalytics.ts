@@ -5,9 +5,9 @@
 import { format } from "date-fns";
 import { tr } from "date-fns/locale";
 import {
-  campusMatchesParent,
+  appendSchoolFilter,
   getParentLabel,
-  getParentUniversity,
+  toParentKey,
   UNPARSED_PARENT,
 } from "./campusNormalization";
 import { getCrmPool } from "./crmDb";
@@ -41,70 +41,6 @@ interface WhereClause {
 
 const INCOMING_MESSAGE_FILTER = HUMAN_INCOMING_MESSAGE_FILTER;
 
-/**
- * Loads distinct campus values for parent filter expansion.
- */
-async function loadCampusValues(): Promise<string[]> {
-  const pool = getCrmPool();
-  const { rows } = await pool.query(
-    `SELECT DISTINCT ld.university AS campus
-     FROM lead_details ld
-     JOIN leads l ON l.uuid = ld.lead_uuid
-     WHERE l.is_deleted = false
-       AND ld.university IS NOT NULL
-       AND ld.university <> ''`,
-  );
-  return rows.map((row) => row.campus as string);
-}
-
-/**
- * Resolves parent-university filters to campus names for SQL.
- */
-async function resolveCampusFilters(parents: string[]): Promise<string[]> {
-  if (parents.length === 0) return [];
-  const campuses = await loadCampusValues();
-  return campuses.filter((campus) => campusMatchesParent(campus, parents));
-}
-
-function appendCampusFilter(
-  parts: string[],
-  params: unknown[],
-  campuses: string[],
-  column: string,
-): void {
-  if (campuses.length === 0) return;
-  params.push(campuses);
-  parts.push(`${column} = ANY($${params.length}::text[])`);
-}
-
-function appendSchoolFilter(
-  parts: string[],
-  params: unknown[],
-  parentFilters: string[],
-  campuses: string[],
-): void {
-  if (parentFilters.length === 0) return;
-
-  const includesUnparsed = parentFilters.includes(UNPARSED_PARENT);
-
-  if (campuses.length > 0 && includesUnparsed) {
-    params.push(campuses);
-    parts.push(
-      `(ld.university = ANY($${params.length}::text[]) OR ld.university IS NULL OR ld.university = '' OR ld.university = 'bilinmiyor')`,
-    );
-    return;
-  }
-
-  if (includesUnparsed) {
-    parts.push(
-      `(ld.university IS NULL OR ld.university = '' OR ld.university = 'bilinmiyor')`,
-    );
-    return;
-  }
-
-  appendCampusFilter(parts, params, campuses, "ld.university");
-}
-
 export async function buildMessageWhere(
   filters: CrmDashboardFilters,
   messageFilter: string = INCOMING_MESSAGE_FILTER,
@@ -121,8 +57,7 @@ export async function buildMessageWhere(
     parts.push(endDateFilter("lm.created_at", `$${params.length}`));
   }
 
-  const campuses = await resolveCampusFilters(filters.parentUniversities);
-  appendSchoolFilter(parts, params, filters.parentUniversities, campuses);
+  appendSchoolFilter(parts, params, filters.parentUniversities);
 
   return { sql: `WHERE ${parts.join(" AND ")}`, params };
 }
@@ -142,8 +77,7 @@ async function buildLeadWhere(
     parts.push(endDateFilter("l.created_at", `$${params.length}`));
   }
 
-  const campuses = await resolveCampusFilters(filters.parentUniversities);
-  appendSchoolFilter(parts, params, filters.parentUniversities, campuses);
+  appendSchoolFilter(parts, params, filters.parentUniversities);
 
   const sql = parts.length ? `WHERE ${parts.join(" AND ")}` : "";
   return { sql, params };
@@ -187,8 +121,7 @@ function aggregateCampusRows(
   const totals = new Map<string, number>();
 
   for (const row of rows) {
-    const parent = getParentUniversity(row.campus);
-    const key = parent === "Belirtilmemiş" ? UNPARSED_PARENT : parent;
+    const key = toParentKey(row.campus);
     totals.set(key, (totals.get(key) || 0) + row.value);
   }
 
@@ -208,8 +141,7 @@ function mergeSchoolTableRows(
   const byParent = new Map<string, SchoolTableRow>();
 
   for (const row of messageRows) {
-    const parent = getParentUniversity(row.campus);
-    const key = parent === "Belirtilmemiş" ? UNPARSED_PARENT : parent;
+    const key = toParentKey(row.campus);
     const existing = byParent.get(key) || {
       key,
       name: getParentLabel(key),
@@ -221,8 +153,7 @@ function mergeSchoolTableRows(
   }
 
   for (const row of leadRows) {
-    const parent = getParentUniversity(row.campus);
-    const key = parent === "Belirtilmemiş" ? UNPARSED_PARENT : parent;
+    const key = toParentKey(row.campus);
     const existing = byParent.get(key) || {
       key,
       name: getParentLabel(key),
@@ -244,13 +175,14 @@ export async function getCrmFilterOptions(): Promise<CrmFilterOptionsResponse> {
   const pool = getCrmPool();
 
   const [campuses, dates] = await Promise.all([
+    // Canonical schools that actually appear in parsed conversations. Previously
+    // this was every distinct free-text `lead_details.university` value, so the
+    // dropdown listed campus-level strings and typos as separate options.
     pool.query(
-      `SELECT DISTINCT ld.university AS campus
-       FROM lead_details ld
-       JOIN leads l ON l.uuid = ld.lead_uuid
-       WHERE l.is_deleted = false
-         AND ld.university IS NOT NULL
-         AND ld.university <> ''`,
+      `SELECT DISTINCT uc.canonical_name AS campus
+       FROM lead_university_mentions m
+       JOIN university_canonical uc ON uc.id = m.canonical_id
+       JOIN leads l ON l.uuid = m.lead_uuid AND l.is_deleted = false`,
     ),
     pool.query(
       `SELECT
@@ -268,8 +200,7 @@ export async function getCrmFilterOptions(): Promise<CrmFilterOptionsResponse> {
   parentSet.set(UNPARSED_PARENT, "Belirtilmemiş");
 
   for (const row of campuses.rows) {
-    const parent = getParentUniversity(row.campus as string);
-    const key = parent === "Belirtilmemiş" ? UNPARSED_PARENT : parent;
+    const key = toParentKey(row.campus as string);
     parentSet.set(key, getParentLabel(key));
   }
 
@@ -321,6 +252,30 @@ export async function getCrmAnalytics(
   const leadFrom = `
     FROM leads l
     LEFT JOIN lead_details ld ON ld.lead_uuid = l.uuid
+    ${leadWhere.sql}
+  `;
+
+  // School breakdowns join the parsed mentions.
+  //
+  // Messages: a LEFT JOIN on every mention, so a lead that named two schools has its
+  // messages counted under each of them (once per school, not once per mention).
+  // Leads: joined on mention_rank = 1 only, so each lead lands in exactly one school
+  // -- the one it named first -- keeping the lead column a clean partition that sums
+  // to the total lead count.
+  const schoolMessageFrom = `
+    FROM lead_messages lm
+    INNER JOIN leads l ON l.uuid = lm.lead_uuid
+    LEFT JOIN lead_details ld ON ld.lead_uuid = l.uuid
+    LEFT JOIN lead_university_mentions m ON m.lead_uuid = l.uuid
+    LEFT JOIN university_canonical uc ON uc.id = m.canonical_id
+    ${messageWhere.sql}
+  `;
+
+  const schoolLeadFrom = `
+    FROM leads l
+    LEFT JOIN lead_details ld ON ld.lead_uuid = l.uuid
+    LEFT JOIN lead_university_mentions m ON m.lead_uuid = l.uuid AND m.mention_rank = 1
+    LEFT JOIN university_canonical uc ON uc.id = m.canonical_id
     ${leadWhere.sql}
   `;
 
@@ -383,32 +338,32 @@ export async function getCrmAnalytics(
       leadWhere.params,
     ),
     pool.query(
-      `SELECT COALESCE(ld.university, 'Belirtilmemiş') AS campus,
+      `SELECT COALESCE(uc.canonical_name, 'Belirtilmemiş') AS campus,
               COUNT(*)::int AS value
-       ${messageFrom}
+       ${schoolMessageFrom}
        GROUP BY 1
        ORDER BY value DESC`,
       messageWhere.params,
     ),
     pool.query(
-      `SELECT COALESCE(ld.university, 'Belirtilmemiş') AS campus,
+      `SELECT COALESCE(uc.canonical_name, 'Belirtilmemiş') AS campus,
               COUNT(DISTINCT l.lead_phone)::int AS value
-       ${leadFrom}
+       ${schoolLeadFrom}
        GROUP BY 1
        ORDER BY value DESC`,
       leadWhere.params,
     ),
     pool.query(
-      `SELECT COALESCE(ld.university, 'Belirtilmemiş') AS campus,
+      `SELECT COALESCE(uc.canonical_name, 'Belirtilmemiş') AS campus,
               COUNT(*)::int AS messages
-       ${messageFrom}
+       ${schoolMessageFrom}
        GROUP BY 1`,
       messageWhere.params,
     ),
     pool.query(
-      `SELECT COALESCE(ld.university, 'Belirtilmemiş') AS campus,
+      `SELECT COALESCE(uc.canonical_name, 'Belirtilmemiş') AS campus,
               COUNT(DISTINCT l.lead_phone)::int AS leads
-       ${leadFrom}
+       ${schoolLeadFrom}
        GROUP BY 1`,
       leadWhere.params,
     ),
