@@ -22,3 +22,19 @@ input,
 select {
   font: inherit;
 }
+
+/* Column-header hint tooltip: appears after a 2s hover delay, fades in. */
+@keyframes header-tooltip-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.header-tooltip {
+  animation: header-tooltip-fade-in 0.2s ease-out forwards;
+}

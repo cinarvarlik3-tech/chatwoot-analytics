@@ -200,6 +200,8 @@ export interface UniversityAnalysisRow {
   getiri: number;
   /** 0-10 combined business importance. */
   onemScore: number;
+  /** Hand-entered integer, persisted server-side. null when never set. */
+  manuelSkor: number | null;
   /** İlgi - Uyum. Positive = demand we cannot serve. */
   fark: number;
   importanceScore: number;

@@ -163,6 +163,8 @@ SELECT b.canonical_id, b.canonical_name, b.scope,
 FROM base b CROSS JOIN glob g
 ORDER BY importance_score DESC NULLS LAST, b.leads DESC`;
 
+const MANUAL_SCORES_SQL = `SELECT canonical_id, score FROM university_manual_scores`;
+
 const TOTALS_SQL = `
 WITH live AS (
   SELECT l.uuid FROM leads l
@@ -186,10 +188,14 @@ const iso = (v: unknown): string | null =>
 /** Loads every university with its metrics, ranked by importance score. */
 export async function getUniversityAnalysis(): Promise<UniversityAnalysisResponse> {
   const pool = getCrmPool();
-  const [rowsRes, totalsRes] = await Promise.all([
+  const [rowsRes, totalsRes, manualRes] = await Promise.all([
     pool.query(ROWS_SQL),
     pool.query(TOTALS_SQL),
+    pool.query(MANUAL_SCORES_SQL),
   ]);
+  const manualByCanonicalId = new Map<string, number>(
+    manualRes.rows.map((r) => [String(r.canonical_id), Number(r.score)]),
+  );
 
   // Uyum comes from committed geo/price/quality data, not the database.
   const uyumByName = computeUyum();
@@ -231,6 +237,7 @@ export async function getUniversityAnalysis(): Promise<UniversityAnalysisRespons
     firstMentionAt: iso(r.first_mention_at),
     lastMentionAt: iso(r.last_mention_at),
     importanceScore: num(r.importance_score),
+    manuelSkor: manualByCanonicalId.get(String(r.canonical_id)) ?? null,
     // filled in below, once Uyum is joined
     ilgiScore: 0, uyumScore: 0, uyumFemale: 0, uyumMale: 0,
     getiri: 1, onemScore: 0, fark: 0,
@@ -271,4 +278,28 @@ export async function getUniversityAnalysis(): Promise<UniversityAnalysisRespons
     generatedAt: new Date().toISOString(),
     lastParsedAt: iso(t.last_parsed_at),
   };
+}
+
+const UPSERT_MANUAL_SCORE_SQL = `
+  INSERT INTO university_manual_scores (canonical_id, score, updated_at)
+  VALUES ($1, $2, now())
+  ON CONFLICT (canonical_id) DO UPDATE SET score = EXCLUDED.score, updated_at = now()`;
+
+const DELETE_MANUAL_SCORE_SQL = `DELETE FROM university_manual_scores WHERE canonical_id = $1`;
+
+/**
+ * Persists (or clears, when score is null) the Manuel Skor for one university.
+ * Postgres integer is int4, so anything outside that range is rejected by the
+ * driver/column itself rather than needing an explicit range check here.
+ */
+export async function setManualScore(canonicalId: string, score: number | null): Promise<void> {
+  const pool = getCrmPool();
+  if (score === null) {
+    await pool.query(DELETE_MANUAL_SCORE_SQL, [canonicalId]);
+    return;
+  }
+  if (!Number.isInteger(score)) {
+    throw new Error("Manuel Skor bir tam sayı olmalıdır");
+  }
+  await pool.query(UPSERT_MANUAL_SCORE_SQL, [canonicalId, score]);
 }

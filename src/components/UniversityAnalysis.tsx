@@ -5,7 +5,7 @@
  * matter for ranking it by business importance. Sortable on every column.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowDownUp,
@@ -43,6 +43,13 @@ const one = new Intl.NumberFormat("tr-TR", {
 
 const pct = (v: number) => `%${one.format(v)}`;
 const dash = "–";
+/**
+ * Manuel Skor is a UI-level guardrail only: the column, and pointedly the API
+ * and database, still accept any int4. This just stops the operator mistyping
+ * something far outside a 0-10 scale — nothing downstream depends on it.
+ */
+const MANUAL_SCORE_MIN = 0;
+const MANUAL_SCORE_MAX = 10;
 
 /** Renders a duration in minutes as the largest sensible unit. */
 function minutes(v: number | null): string {
@@ -108,6 +115,23 @@ const COLUMNS: Column[] = [
 
 const GROUP_ORDER = ["Skor Detayı", "Hacim", "Aday Başına", "Etkileşim", "Trend"];
 
+/**
+ * Hand-entered, persisted server-side (university_manual_scores), independent of
+ * the three computed scores. Always the rightmost column: appended after every
+ * other toggle so its position never shifts as Skor Detayı / Cinsiyet reveal or
+ * hide other columns. Rendered specially in the body (an editable input, not
+ * plain text), but reuses the Column shape so header sort/group logic needs no
+ * special case.
+ */
+const MANUAL_SCORE_COLUMN: Column = {
+  key: "manuelSkor",
+  label: "Manuel Skor",
+  hint: "Elle girilen, 0-10 arası tam sayı. Veritabanında saklanır; sayfa yenilense veya farklı bir cihazdan açılsa da kalıcıdır. Diğer üç skoru etkilemez.",
+  group: "Skorlar",
+  format: (r) => (r.manuelSkor === null ? dash : int.format(r.manuelSkor)),
+  emphasis: true,
+};
+
 function StatCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
     <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
@@ -129,6 +153,44 @@ export function UniversityAnalysis() {
   const [minLeads, setMinLeads] = useState(0);
   const [showDetails, setShowDetails] = useState(false);
   const [showGender, setShowGender] = useState(false);
+  // Manuel Skor edit state, keyed by canonicalId: an in-flight text override
+  // while the user is typing, a "saving" flag, and the id of the last failed save.
+  const [manualDrafts, setManualDrafts] = useState<Record<string, string>>({});
+  const [manualSaving, setManualSaving] = useState<string | null>(null);
+  const [manualError, setManualError] = useState<string | null>(null);
+
+  // Column-header hint tooltip: shown only after the cursor rests on a header for
+  // 2s, follows the cursor while up, and fades in via the .header-tooltip CSS
+  // animation. `hoverKey` forces a remount (so the animation replays) whenever a
+  // different header becomes the hovered one.
+  const [hoverHint, setHoverHint] = useState<{ key: string; text: string; x: number; y: number } | null>(null);
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function handleHeaderEnter(col: Column, e: React.MouseEvent) {
+    const { clientX: x, clientY: y } = e;
+    if (hoverTimer.current) clearTimeout(hoverTimer.current);
+    hoverTimer.current = setTimeout(() => {
+      setHoverHint({ key: col.key, text: col.hint, x, y });
+    }, 2000);
+  }
+
+  function handleHeaderMove(col: Column, e: React.MouseEvent) {
+    setHoverHint((cur) => (cur && cur.key === col.key ? { ...cur, x: e.clientX, y: e.clientY } : cur));
+  }
+
+  function handleHeaderLeave() {
+    if (hoverTimer.current) {
+      clearTimeout(hoverTimer.current);
+      hoverTimer.current = null;
+    }
+    setHoverHint(null);
+  }
+
+  useEffect(() => {
+    return () => {
+      if (hoverTimer.current) clearTimeout(hoverTimer.current);
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -155,14 +217,75 @@ export function UniversityAnalysis() {
     };
   }, []);
 
-  /** Default view is the three scores; details expand the full calculation. */
+  /**
+   * Default view is the three scores plus Manuel Skor; details expand the full
+   * calculation. Manuel Skor is appended last unconditionally so it stays the
+   * rightmost column regardless of which toggles are on.
+   */
   const visibleColumns = useMemo(() => {
     // gender split sits directly after Uyum Skoru so the three read together
     const scores = showGender
       ? [SCORE_COLUMNS[0], ...GENDER_COLUMNS, ...SCORE_COLUMNS.slice(1)]
       : SCORE_COLUMNS;
-    return showDetails ? [...scores, ...COLUMNS] : scores;
+    const base = showDetails ? [...scores, ...COLUMNS] : scores;
+    return [...base, MANUAL_SCORE_COLUMN];
   }, [showDetails, showGender]);
+
+  /** Persists a Manuel Skor edit; empty string clears it. Reverts on failure. */
+  async function commitManualScore(canonicalId: string, raw: string) {
+    const trimmed = raw.trim();
+    let score: number | null;
+    if (trimmed === "") {
+      score = null;
+    } else {
+      const n = Number(trimmed);
+      if (!Number.isInteger(n) || n < MANUAL_SCORE_MIN || n > MANUAL_SCORE_MAX) {
+        setManualError(canonicalId);
+        setManualDrafts((d) => {
+          const next = { ...d };
+          delete next[canonicalId];
+          return next;
+        });
+        return;
+      }
+      score = n;
+    }
+
+    setManualSaving(canonicalId);
+    setManualError(null);
+    try {
+      const res = await fetch("/api/crm/university-analysis", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ canonicalId, score }),
+      });
+      if (!res.ok) throw new Error("save failed");
+      setData((prev) =>
+        prev
+          ? {
+              ...prev,
+              rows: prev.rows.map((r) =>
+                r.canonicalId === canonicalId ? { ...r, manuelSkor: score } : r,
+              ),
+            }
+          : prev,
+      );
+      setManualDrafts((d) => {
+        const next = { ...d };
+        delete next[canonicalId];
+        return next;
+      });
+    } catch {
+      setManualError(canonicalId);
+      setManualDrafts((d) => {
+        const next = { ...d };
+        delete next[canonicalId];
+        return next;
+      });
+    } finally {
+      setManualSaving((cur) => (cur === canonicalId ? null : cur));
+    }
+  }
 
   const rows = useMemo(() => {
     if (!data) return [];
@@ -355,8 +478,11 @@ export function UniversityAnalysis() {
                 return (
                   <th
                     key={col.key}
-                    title={col.hint}
+                    aria-label={col.hint}
                     onClick={() => toggleSort(col.key)}
+                    onMouseEnter={(e) => handleHeaderEnter(col, e)}
+                    onMouseMove={(e) => handleHeaderMove(col, e)}
+                    onMouseLeave={handleHeaderLeave}
                     aria-sort={active ? (asc ? "ascending" : "descending") : "none"}
                     className={`cursor-pointer whitespace-nowrap px-3 py-2 text-right text-xs font-semibold transition-colors hover:bg-slate-50 ${
                       firstInGroup ? "border-l border-slate-200" : ""
@@ -424,6 +550,70 @@ export function UniversityAnalysis() {
                   {visibleColumns.map((col, i, arr) => {
                     const firstInGroup = i === 0 || arr[i - 1].group !== col.group;
                     const active = sortKey === col.key;
+
+                    if (col.key === "manuelSkor") {
+                      const draft = manualDrafts[row.canonicalId];
+                      const value =
+                        draft ?? (row.manuelSkor === null ? "" : String(row.manuelSkor));
+                      const saving = manualSaving === row.canonicalId;
+                      const errored = manualError === row.canonicalId;
+                      return (
+                        <td
+                          key={col.key}
+                          className={`whitespace-nowrap px-2 py-1.5 text-right ${
+                            firstInGroup ? "border-l border-slate-100" : ""
+                          } ${active ? "bg-violet-50/50" : ""}`}
+                        >
+                          <input
+                            type="number"
+                            step={1}
+                            min={MANUAL_SCORE_MIN}
+                            max={MANUAL_SCORE_MAX}
+                            inputMode="numeric"
+                            value={value}
+                            disabled={saving}
+                            placeholder="–"
+                            title={col.hint}
+                            onChange={(e) => {
+                              setManualError((cur) => (cur === row.canonicalId ? null : cur));
+                              // Guardrail is UI-only: let "-" and an empty field through
+                              // while typing, but a fully-formed out-of-range number is
+                              // clamped immediately rather than sent to the API.
+                              const raw = e.target.value;
+                              let next = raw;
+                              if (raw !== "" && raw !== "-" && /^-?\d+$/.test(raw)) {
+                                const n = Number(raw);
+                                if (n > MANUAL_SCORE_MAX) next = String(MANUAL_SCORE_MAX);
+                                else if (n < MANUAL_SCORE_MIN) next = String(MANUAL_SCORE_MIN);
+                              }
+                              setManualDrafts((d) => ({
+                                ...d,
+                                [row.canonicalId]: next,
+                              }));
+                            }}
+                            onBlur={(e) => commitManualScore(row.canonicalId, e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.currentTarget.blur();
+                              } else if (e.key === "Escape") {
+                                setManualDrafts((d) => {
+                                  const next = { ...d };
+                                  delete next[row.canonicalId];
+                                  return next;
+                                });
+                                e.currentTarget.blur();
+                              }
+                            }}
+                            className={`w-20 rounded-md border bg-white px-2 py-1 text-right text-sm font-semibold tabular-nums text-slate-900 outline-none transition-colors disabled:opacity-50 ${
+                              errored
+                                ? "border-red-300 focus:border-red-400"
+                                : "border-slate-200 focus:border-violet-400"
+                            }`}
+                          />
+                        </td>
+                      );
+                    }
+
                     return (
                       <td
                         key={col.key}
@@ -487,6 +677,17 @@ export function UniversityAnalysis() {
           )}
         </div>
       </div>
+
+      {hoverHint && (
+        <div
+          key={hoverHint.key}
+          role="tooltip"
+          className="header-tooltip pointer-events-none fixed z-50 max-w-xs rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs leading-relaxed text-slate-100 shadow-lg"
+          style={{ left: hoverHint.x + 14, top: hoverHint.y + 18 }}
+        >
+          {hoverHint.text}
+        </div>
+      )}
     </div>
   );
 }
