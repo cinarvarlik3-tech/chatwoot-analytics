@@ -6,21 +6,37 @@
 
 import { useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import type { DashboardYear } from "@/lib/types";
+import type { DashboardView } from "@/lib/types";
+import { viewYear } from "@/lib/types";
 
 interface AppShellProps {
-  year: DashboardYear;
-  onYearChange: (year: DashboardYear) => void;
+  view: DashboardView;
+  onViewChange: (view: DashboardView) => void;
   children: React.ReactNode;
 }
 
-const NAV_ITEMS: { year: DashboardYear; label: string; hint: string }[] = [
-  { year: "2025", label: "2025 Yılı", hint: "Chatwoot arşivi" },
-  { year: "2026", label: "2026 Yılı", hint: "Canlı CRM" },
+interface NavItem {
+  view: DashboardView;
+  label: string;
+  hint: string;
+  short: string;
+  children?: { view: DashboardView; label: string }[];
+}
+
+const NAV_ITEMS: NavItem[] = [
+  { view: "2025", label: "2025 Yılı", hint: "Chatwoot arşivi", short: "2025" },
+  {
+    view: "2026",
+    label: "2026 Yılı",
+    hint: "Canlı CRM",
+    short: "2026",
+    children: [{ view: "2026-university", label: "Üniversite Analizi" }],
+  },
 ];
 
-export function AppShell({ year, onYearChange, children }: AppShellProps) {
+export function AppShell({ view, onViewChange, children }: AppShellProps) {
   const [collapsed, setCollapsed] = useState(false);
+  const activeYear = viewYear(view);
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -56,42 +72,73 @@ export function AppShell({ year, onYearChange, children }: AppShellProps) {
             </button>
           </div>
 
-          <nav className="flex min-w-0 flex-1 flex-col gap-1 overflow-hidden p-2">
+          <nav className="flex min-w-0 flex-1 flex-col gap-1 overflow-y-auto overflow-x-hidden p-2">
             {NAV_ITEMS.map((item) => {
-              const active = year === item.year;
+              // The parent highlights only on its own view, so an active child does
+              // not make two rows look selected at once.
+              const parentActive = view === item.view;
+              const branchActive = viewYear(item.view) === activeYear;
+
               return (
-                <button
-                  key={item.year}
-                  type="button"
-                  onClick={() => onYearChange(item.year)}
-                  title={collapsed ? item.label : undefined}
-                  className={`min-w-0 overflow-hidden rounded-xl transition-colors ${
-                    collapsed ? "px-1 py-2.5" : "px-3 py-3 text-left"
-                  } ${
-                    active
-                      ? "bg-violet-600 text-white shadow-sm"
-                      : "text-slate-700 hover:bg-slate-100"
-                  }`}
-                >
-                  {collapsed ? (
-                    <span className="block truncate text-center text-xs font-semibold">
-                      {item.year}
-                    </span>
-                  ) : (
-                    <>
-                      <span className="block truncate text-sm font-semibold">
-                        {item.label}
+                <div key={item.view} className="min-w-0">
+                  <button
+                    type="button"
+                    onClick={() => onViewChange(item.view)}
+                    title={collapsed ? item.label : undefined}
+                    aria-current={parentActive ? "page" : undefined}
+                    className={`w-full min-w-0 overflow-hidden rounded-xl transition-colors ${
+                      collapsed ? "px-1 py-2.5" : "px-3 py-3 text-left"
+                    } ${
+                      parentActive
+                        ? "bg-violet-600 text-white shadow-sm"
+                        : "text-slate-700 hover:bg-slate-100"
+                    }`}
+                  >
+                    {collapsed ? (
+                      <span className="block truncate text-center text-xs font-semibold">
+                        {item.short}
                       </span>
-                      <span
-                        className={`mt-0.5 block truncate text-xs ${
-                          active ? "text-violet-100" : "text-slate-500"
-                        }`}
-                      >
-                        {item.hint}
-                      </span>
-                    </>
+                    ) : (
+                      <>
+                        <span className="block truncate text-sm font-semibold">
+                          {item.label}
+                        </span>
+                        <span
+                          className={`mt-0.5 block truncate text-xs ${
+                            parentActive ? "text-violet-100" : "text-slate-500"
+                          }`}
+                        >
+                          {item.hint}
+                        </span>
+                      </>
+                    )}
+                  </button>
+
+                  {/* Sub-items stay visible while anywhere in that year's branch, so
+                      the user can see where they are and get back out. */}
+                  {!collapsed && item.children && branchActive && (
+                    <div className="mt-1 flex flex-col gap-1 border-l border-slate-200 pl-2 ml-3">
+                      {item.children.map((child) => {
+                        const childActive = view === child.view;
+                        return (
+                          <button
+                            key={child.view}
+                            type="button"
+                            onClick={() => onViewChange(child.view)}
+                            aria-current={childActive ? "page" : undefined}
+                            className={`min-w-0 overflow-hidden rounded-lg px-3 py-2 text-left text-xs font-medium transition-colors ${
+                              childActive
+                                ? "bg-violet-50 text-violet-700"
+                                : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                            }`}
+                          >
+                            <span className="block truncate">{child.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
                   )}
-                </button>
+                </div>
               );
             })}
           </nav>
